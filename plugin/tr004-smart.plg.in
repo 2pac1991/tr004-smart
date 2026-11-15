@@ -23,7 +23,7 @@
 
 <!-- Paket (Skript, Vermittler, Einstellungsseite) -->
 <FILE Name="&cfgdir;/&name;-&version;.txz" Run="upgradepkg --install-new">
-<URL>https://github.com/2pac1991/tr004-smart/raw/main/archive/&name;-&version;.txz</URL>
+<URL>https://github.com/2pac1991/tr004-smart/releases/download/&version;/&name;-&version;.txz</URL>
 <MD5>&md5;</MD5>
 </FILE>
 
