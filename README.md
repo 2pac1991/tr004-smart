@@ -86,9 +86,9 @@ cp unraid/tr004-smart.cron /boot/config/plugins/dynamix/ && /usr/local/sbin/upda
 
 ## Unraid und Home Assistant
 
-Siehe [unraid/](unraid/): ein Cron-Eintrag, der alle 10 Minuten liest, und ein Beispiel,
+Siehe [unraid/](unraid/): ein Cron-Eintrag, der jede Minute liest (stündlich alle Einschübe, sonst nur die belegten), und ein Beispiel,
 wie die Temperaturen in ein Home-Assistant-Webhook-Skript kommen.
-Öfter als alle 10 Minuten abzufragen bringt nichts.
+Ein Lauf dauert etwa 2 Sekunden. Unraid fragt seinerseits alle 30 Sekunden ab und bekommt dann die neuesten Werte.
 
 ## Wichtig
 

@@ -197,8 +197,14 @@ cmd_read() {
   local magic_before; magic_before=$(part_magic)
   trap 'verify_restore "$SNAP"' EXIT INT TERM
 
-  local out="$STATE_DIR/last.json" p res all="[]"
-  for p in $PORTS; do
+  # Schnelllauf: nur Einschuebe mit SMART-Daten; einmal pro Stunde alle Einschuebe durchsuchen
+  local ports="$PORTS" act="$STATE_DIR/active_ports" full=1 mt
+  mt=$(stat -c %Y "$act" 2>/dev/null || stat -f %m "$act" 2>/dev/null || echo 0)
+  if [ -s "$act" ] && [ $(( $(date +%s) - mt )) -lt 3600 ] && [ "${TR004_FULL:-0}" != 1 ]; then
+    ports=$(cat "$act"); full=0
+  fi
+  local out="$STATE_DIR/last.json" p res all="[]" found=""
+  for p in $ports; do
     res=$(query_port "$mb" "$p")
     # nach JEDEM Befehl pruefen - so bleibt nie etwas laenger als einen Befehl lang liegen
     verify_restore "$snap" || die "Wiederherstellung fehlgeschlagen - Abbild liegt in $snap"
@@ -210,12 +216,15 @@ cmd_read() {
       verify_restore "$snap" || die "Wiederherstellung fehlgeschlagen - Abbild liegt in $snap"
       # Kopfzeile so anpassen, dass sie wie ein normaler Aufruf aussieht
       sed -e "s#^Device type:.*##" "$STATE_DIR/port$p.txt.tmp" > "$STATE_DIR/port$p.txt" && rm -f "$STATE_DIR/port$p.txt.tmp"
+      found="$found $p"
     else
       rm -f "$STATE_DIR/port$p.txt" "$STATE_DIR/port$p.rc"
     fi
     all=$(jq -c --argjson p "$p" --argjson r "$res" '. + [{port:$p, smart:$r}]' <<<"$all" 2>/dev/null || echo "$all")
   done
   trap - EXIT INT TERM
+  if [ $full = 1 ]; then echo $found > "$act"
+  elif [ "$(echo $found)" != "$(echo $ports)" ]; then rm -f "$act"; fi   # Aenderung -> naechstes Mal komplett suchen
   verify_restore "$snap" || die "Wiederherstellung fehlgeschlagen - Abbild liegt in $snap"
   [ "$(part_magic)" = "$magic_before" ] || \
     die "Kennung am Partitionsanfang hat sich veraendert! Vorher: $magic_before / Nachher: $(part_magic) - Array pruefen, tr004-smart nicht mehr benutzen"
