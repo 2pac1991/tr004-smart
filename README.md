@@ -100,9 +100,9 @@ Einschübe, deren Platte der Chip als „nicht verbunden“ meldet, werden wie l
 
 ## Unraid und Home Assistant
 
-Siehe [unraid/](unraid/): ein Cron-Eintrag, der jede Minute liest (stündlich alle Einschübe, sonst nur die belegten), und ein Beispiel,
-wie die Temperaturen in ein Home-Assistant-Webhook-Skript kommen.
-Ein Lauf dauert etwa 2 Sekunden. Unraid fragt seinerseits alle 30 Sekunden ab und bekommt dann die neuesten Werte.
+Das Plugin liest jede Minute (stündlich alle Einschübe, sonst nur die belegten). Ein Lauf dauert
+etwa 2 Sekunden; Unraid fragt alle 30 Sekunden ab und bekommt dann die neuesten Werte.
+Wie die Temperaturen in ein Home-Assistant-Webhook-Skript kommen: [unraid/home-assistant.md](unraid/home-assistant.md).
 
 ## Wichtig
 
