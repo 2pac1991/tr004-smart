@@ -19,7 +19,8 @@ set -u
 VERSION="0.2.0"
 
 # ---------- Einstellungen (per Umgebung oder /boot/config/tr004-smart.conf ueberschreibbar) ----------
-CONF="${TR004_CONF:-/boot/config/tr004-smart.conf}"
+PLUGCFG=/boot/config/plugins/tr004-smart
+CONF="${TR004_CONF:-$PLUGCFG/tr004-smart.cfg}"
 [ -r "$CONF" ] && . "$CONF"
 STATE_DIR="${TR004_STATE_DIR:-/var/lib/tr004-smart}"     # Sicherungen + Ergebnisse
 SNAP_SECTORS="${TR004_SNAP_SECTORS:-64}"                  # so viele Sektoren am Plattenanfang werden gesichert
@@ -27,7 +28,7 @@ MAILBOX_LBA="${TR004_MAILBOX_LBA:-48}"                    # Briefkasten-Sektor (
 PORTS="${TR004_PORTS:-0 1 2 3}"                            # Einschuebe des TR-004
 SMARTCTL="${TR004_SMARTCTL:-$( [ -x /usr/sbin/smartctl.real ] && echo /usr/sbin/smartctl.real || echo smartctl)}"
 DEVTYPE="${TR004_DEVTYPE:-jmb39x-q}"                       # QNAP-Variante des JMicron-Protokolls
-ENABLED_FLAG="${TR004_ENABLED_FLAG:-/boot/config/tr004-smart.enabled}"
+ENABLED_FLAG="${TR004_ENABLED_FLAG:-$PLUGCFG/enabled}"
 DEV_GLOB="${TR004_DEV_GLOB:-/dev/disk/by-id/usb-QNAP_TR-004_DISK*}"
 LOCK="${TR004_LOCK:-/var/lock/tr004-smart.lock}"
 
@@ -215,6 +216,7 @@ tr004-smart $VERSION - SMART fuer QNAP TR-004 sicher auslesen
   tr004-smart exec <port> ARGS  smartctl-Befehl an Einschub <port> (z. B. -t short)
   tr004-smart restore <dir>     Sektoren 0..$((SNAP_SECTORS-1)) aus einem Abbild-Ordner zurueckschreiben
   tr004-smart enable            echtes Auslesen freischalten (legt $ENABLED_FLAG an)
+  tr004-smart disable           wieder abschalten
 
 Ablage: $STATE_DIR/port<N>.full (smartctl -x), port<N>.attr (smartctl -H -A), last.json
 Einstellungen: $CONF  (MAILBOX_LBA=$MAILBOX_LBA, PORTS="$PORTS")
@@ -236,7 +238,9 @@ mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0; 
 
 cmd_read() {
   local json=0 force_full=0 a
-  for a in "$@"; do case "$a" in --json) json=1 ;; --full) force_full=1 ;; esac; done
+  for a in "$@"; do case "$a" in --json) json=1 ;; --full) force_full=1 ;;
+    --cron) [ -f "$ENABLED_FLAG" ] || return 0 ;;   # vom Zeitplan: still beenden, solange nicht freigeschaltet
+  esac; done
   begin_protected
 
   # Voll-Lauf (smartctl -x, alle Einschuebe) einmal pro Stunde oder auf Anforderung,
@@ -298,7 +302,8 @@ case "${1:-}" in
   read)    shift; cmd_read "$@" ;;
   exec)    shift; cmd_exec "$@" ;;
   restore) [ -d "${2:-}" ] || die "Abbild-Ordner angeben"; verify_restore "$2" ;;
-  enable)  cmd_list && { touch "$ENABLED_FLAG"; echo "freigeschaltet: $ENABLED_FLAG"; } ;;
+  enable)  cmd_list && { mkdir -p "$(dirname "$ENABLED_FLAG")"; touch "$ENABLED_FLAG"; echo "freigeschaltet: $ENABLED_FLAG"; } ;;
+  disable) rm -f "$ENABLED_FLAG"; echo "abgeschaltet" ;;
   -v|--version) echo "$VERSION" ;;
   *)       usage ;;
 esac

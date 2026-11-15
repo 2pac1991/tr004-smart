@@ -39,7 +39,7 @@ if [ -n "$real" ] && [ -b "$real" ]; then
     # Befehle, die etwas an der Platte ausloesen -> geschuetzt durchreichen
     case " ${a[*]} " in
       *" -t "*|*" --test"*|*" -X "*|*" --abort "*|*" -s "*|*" --smart"*|*" -o "*|*" --offlineauto"*|*" -S "*|*" --saveauto"*)
-        exec /bin/bash /boot/config/custom/tr004-smart exec "$n" "${a[@]}" ;;
+        exec /bin/bash "${TR004_BIN:-/usr/local/sbin/tr004-smart}" exec "$n" "${a[@]}" ;;
     esac
     # nur Gesundheit/Attribute gefragt -> minuetlicher Stand, sonst der vollstaendige Bericht
     only_attr=1

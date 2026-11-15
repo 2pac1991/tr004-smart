@@ -1,0 +1,67 @@
+Menu="Utilities"
+Title="TR-004 SMART"
+Icon="hdd-o"
+Tag="hdd-o"
+---
+<?PHP
+/* tr004-smart - Einstellungs- und Statusseite */
+$state   = '/var/lib/tr004-smart';
+$enabled = file_exists('/boot/config/plugins/tr004-smart/enabled');
+$last    = @json_decode(@file_get_contents("$state/last.json"), true) ?: [];
+$lastrun = @filemtime("$state/last.json");
+exec('/usr/local/sbin/tr004-smart list 2>&1', $check, $checkrc);
+$wrapper = file_exists('/usr/sbin/smartctl.real');
+function h($s) { return htmlspecialchars((string)$s, ENT_QUOTES); }
+?>
+<style>
+.tr004 table { width:auto; margin:8px 0 16px; }
+.tr004 td, .tr004 th { padding:4px 14px 4px 0; text-align:left; }
+.tr004 pre { background:rgba(128,128,128,.1); padding:8px; white-space:pre-wrap; }
+.tr004 .ok { color:#2e9e4f; font-weight:bold; } .tr004 .bad { color:#d9534f; font-weight:bold; }
+.tr004 .beta { border-left:4px solid #e69c24; padding:6px 10px; background:rgba(230,156,36,.1); margin-bottom:12px; }
+</style>
+<div class="tr004">
+<div class="beta"><b>Beta.</b> SMART data from disks in a QNAP TR-004 is read through a "mailbox" sector on one of
+the enclosure's disks (the only method the JMicron controller offers). This plugin uses a free sector in the gap
+before the first partition (never sector 33, which belongs to the GPT), backs up sectors 0&ndash;63 of every
+enclosure disk before each run and restores any change right after each command. Use at your own risk.</div>
+
+<table>
+<tr><th>Status</th><td><?=$enabled ? '<span class="ok">enabled</span>' : '<span class="bad">not enabled</span>'?></td></tr>
+<tr><th>smartctl wrapper</th><td><?=$wrapper ? '<span class="ok">active</span> (Unraid gets TR-004 values from the last safe read; unsafe jmb39x calls are blocked)' : '<span class="bad">not active</span>'?></td></tr>
+<tr><th>Last read</th><td><?=$lastrun ? date('Y-m-d H:i:s', $lastrun) : '&ndash;'?></td></tr>
+</table>
+
+<?if ($last):?>
+<table>
+<tr><th>Bay</th><th>Model</th><th>Serial</th><th>Health</th><th>Temp</th><th>Power-on h</th><th>Reallocated</th><th>Pending</th><th>Offline unc.</th></tr>
+<?foreach ($last as $d):?>
+<tr><td><?=h($d['port']+1)?></td><td><?=h($d['model'])?></td><td><?=h($d['serial'])?></td>
+<td><?=$d['passed']===true ? '<span class="ok">PASSED</span>' : ($d['passed']===false ? '<span class="bad">FAILED</span>' : '?')?></td>
+<td><?=h($d['temp'])?> &deg;C</td><td><?=h($d['power_on_hours'])?></td><td><?=h($d['realloc'])?></td><td><?=h($d['pending'])?></td><td><?=h($d['offline_unc'])?></td></tr>
+<?endforeach;?>
+</table>
+<?endif;?>
+
+<b>Safety check</b> (read only):
+<pre id="tr004out"><?=h(implode("\n", $check))?></pre>
+
+<input type="button" value="Run check" onclick="tr004('check')">
+<?if (!$enabled):?>
+<input type="button" value="Enable" <?=$checkrc ? 'disabled' : ''?> onclick="if(confirm('Enable reading SMART data through the mailbox sector?')) tr004('enable')">
+<?else:?>
+<input type="button" value="Read now" onclick="tr004('read')">
+<input type="button" value="Disable" onclick="tr004('disable')">
+<?endif;?>
+<p>Values are refreshed every minute (health and attributes) and every hour (full report).
+Results: <code>/var/lib/tr004-smart/last.json</code>. Command line: <code>tr004-smart</code>.</p>
+</div>
+<script>
+function tr004(action) {
+  $('#tr004out').text('...');
+  $.post('/plugins/tr004-smart/include/action.php', {action: action, csrf_token: '<?=$var['csrf_token']?>'}, function(r) {
+    $('#tr004out').text(r);
+    if (action != 'check') setTimeout(function(){ location.reload(); }, 800);
+  });
+}
+</script>

@@ -3,6 +3,11 @@
 SMART-Werte (Temperatur, Gesundheit, Sektorfehler) von Festplatten im **QNAP TR-004**
 unter **Unraid/Linux** auslesen – ohne die Partitionstabellen zu zerstören.
 
+> **English:** Unraid plugin that safely reads SMART data (temperature, health, attributes) from
+> disks inside a QNAP TR-004 and shows them in the Unraid GUI as if the disks were attached directly.
+> It never uses sector 33 (GPT), backs up sectors 0–63 of every enclosure disk before each run and
+> restores any change after every command, and blocks unsafe `smartctl -d jmb39x` calls. **Beta.**
+
 > **Status: experimentell.** Die Sicherheitslogik ist mit simulierten Platten getestet
 > (`tests/run-tests.sh`) und lief am 15.11.2026 erfolgreich an einem echten TR-004 unter
 > Unraid 7 (smartctl 7.5, Seagate 4 TB GPT + WD 1 TB MBR): Werte gelesen, Sektoren 0–63
@@ -35,18 +40,21 @@ Siehe [docs/befunde.md](docs/befunde.md).
 5. **Erst freischalten:** `read` funktioniert erst nach `tr004-smart enable`, und das geht nur,
    wenn die Prüfung bestanden ist.
 
-## Installation (Unraid)
+## Installation (Unraid-Plugin)
 
-```bash
-mkdir -p /boot/config/custom
-wget -O /boot/config/custom/tr004-smart https://raw.githubusercontent.com/2pac1991/tr004-smart/main/tr004-smart
-chmod +x /boot/config/custom/tr004-smart
+In Unraid unter **Plugins → Install Plugin** diese Adresse eintragen:
+
+```
+https://raw.githubusercontent.com/2pac1991/tr004-smart/main/plugin/tr004-smart.plg
 ```
 
-Der Unraid-USB-Stick erlaubt keine direkte Ausführung, daher immer mit `bash` aufrufen:
-`bash /boot/config/custom/tr004-smart list`
+Danach **Settings → Utilities → TR-004 SMART** öffnen, die Prüfung laufen lassen und
+**Enable** drücken. Ab dann liest das Plugin jede Minute, und Unraid zeigt Temperatur und SMART
+der TR-004-Platten wie bei direkt angeschlossenen Platten.
 
-Voraussetzungen: `smartctl` ab 7.3 (mit `jmb39x-q`), `jq`, `flock`. Bei Unraid ist das dabei.
+Deinstallieren stellt das originale `smartctl` wieder her.
+
+Voraussetzungen: Unraid ab 6.12 (getestet mit 7.x), `smartctl` ab 7.3 (mit `jmb39x-q`).
 
 ## Benutzung
 
@@ -70,19 +78,13 @@ Abbilder liegen in `/var/lib/tr004-smart/snap-*` (die letzten 20 bleiben).
 ## Werte in der Unraid-Oberfläche
 
 Unraid fragt SMART selbst mit `smartctl` ab. Damit es dabei nie den TR-004 direkt anspricht,
-installiert `unraid/install.sh` einen **smartctl-Vermittler** (`unraid/smartctl-wrapper`):
+setzt das Plugin einen **smartctl-Vermittler** ein (`unraid/smartctl-wrapper`):
 
 * Für TR-004-Platten liefert er die zuletzt von `tr004-smart read` gelesene Ausgabe
   (Temperatur, Gesundheit, Attribute, alles wie gewohnt in Main/Dashboard).
 * `jmb39x`/`jms56x`-Aufrufe ohne eigenen Briefkasten-Sektor werden **blockiert**.
 * Alle anderen Platten gehen unverändert an das echte smartctl (`/usr/sbin/smartctl.real`).
 
-```bash
-cp unraid/smartctl-wrapper /boot/config/custom/smartctl-tr004-wrapper
-cp unraid/install.sh /boot/config/custom/tr004-install.sh
-echo 'bash /boot/config/custom/tr004-install.sh' >> /boot/config/go      # nach jedem Start
-cp unraid/tr004-smart.cron /boot/config/plugins/dynamix/ && /usr/local/sbin/update_cron
-```
 
 ### Was geht und was nicht
 

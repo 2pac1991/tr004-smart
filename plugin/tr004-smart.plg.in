@@ -1,0 +1,64 @@
+<?xml version='1.0' standalone='yes'?>
+<!DOCTYPE PLUGIN [
+<!ENTITY name      "tr004-smart">
+<!ENTITY author    "2pac1991">
+<!ENTITY version   "@VERSION@">
+<!ENTITY md5       "@MD5@">
+<!ENTITY gitURL    "https://raw.githubusercontent.com/2pac1991/tr004-smart/main">
+<!ENTITY pluginURL "&gitURL;/plugin/&name;.plg">
+<!ENTITY plugdir   "/usr/local/emhttp/plugins/&name;">
+<!ENTITY cfgdir    "/boot/config/plugins/&name;">
+]>
+<PLUGIN name="&name;" author="&author;" version="&version;" pluginURL="&pluginURL;"
+        launch="Utilities/TR004Smart" icon="hdd-o" min="6.12.0"
+        support="https://github.com/2pac1991/tr004-smart/issues">
+
+<CHANGES>
+##&name;
+###@VERSION@
+- Beta: safe SMART for disks in a QNAP TR-004 (JMicron JMB39x) - mailbox sector outside the partition tables,
+  backup/restore of sectors 0-63 around every command, smartctl wrapper for the Unraid GUI,
+  unsafe jmb39x calls (sector 33) are blocked.
+</CHANGES>
+
+<!-- Paket (Skript, Vermittler, Einstellungsseite) -->
+<FILE Name="&cfgdir;/&name;-&version;.txz" Run="upgradepkg --install-new">
+<URL>https://github.com/2pac1991/tr004-smart/raw/main/archive/&name;-&version;.txz</URL>
+<MD5>&md5;</MD5>
+</FILE>
+
+<!-- nach der Installation (auch bei jedem Start) -->
+<FILE Run="/bin/bash">
+<INLINE>
+mkdir -p &cfgdir;
+# alte Paketversionen entfernen
+ls &cfgdir;/&name;-*.txz 2>/dev/null | grep -v "&version;" | xargs -r rm -f
+# Uebernahme einer Handinstallation (aeltere Versionen)
+rm -f /boot/config/plugins/dynamix/tr004-smart.cron
+[ -f /boot/config/tr004-smart.enabled ] &amp;&amp; mv -f /boot/config/tr004-smart.enabled &cfgdir;/enabled
+[ -f /boot/config/tr004-smart.conf ] &amp;&amp; [ ! -f &cfgdir;/tr004-smart.cfg ] &amp;&amp; mv /boot/config/tr004-smart.conf &cfgdir;/tr004-smart.cfg
+[ -f &cfgdir;/tr004-smart.cfg ] || printf '%s\n' '# tr004-smart Einstellungen' 'TR004_MAILBOX_LBA=48' > &cfgdir;/tr004-smart.cfg
+bash &plugdir;/scripts/install-wrapper.sh
+# Zeitplan: jede Minute (liest nur, wenn freigeschaltet)
+printf '%s\n' '# tr004-smart: SMART der TR-004-Platten sicher lesen' '* * * * * /usr/local/sbin/tr004-smart read --cron &gt;/dev/null 2&gt;&amp;1' > &cfgdir;/&name;.cron
+# update_cron liest nur Plugins, die schon eingetragen sind - darum kurz danach
+nohup bash -c 'sleep 5; /usr/local/sbin/update_cron' &gt;/dev/null 2&gt;&amp;1 &amp;
+echo ""
+echo "tr004-smart &version; installed. Open Settings &gt; Utilities &gt; TR-004 SMART, run the check and enable it."
+</INLINE>
+</FILE>
+
+<!-- Deinstallation -->
+<FILE Run="/bin/bash" Method="remove">
+<INLINE>
+bash &plugdir;/scripts/remove-wrapper.sh
+rm -f &cfgdir;/&name;.cron
+/usr/local/sbin/update_cron
+removepkg &name; >/dev/null 2>&amp;1
+rm -rf &plugdir; /var/lib/tr004-smart
+rm -f &cfgdir;/*.txz
+echo "tr004-smart removed (settings in &cfgdir; kept)."
+</INLINE>
+</FILE>
+
+</PLUGIN>
