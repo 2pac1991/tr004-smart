@@ -25,7 +25,7 @@ STATE_DIR="${TR004_STATE_DIR:-/var/lib/tr004-smart}"     # Sicherungen + Ergebni
 SNAP_SECTORS="${TR004_SNAP_SECTORS:-64}"                  # so viele Sektoren am Plattenanfang werden gesichert
 MAILBOX_LBA="${TR004_MAILBOX_LBA:-48}"                    # Briefkasten-Sektor (nie 33!)
 PORTS="${TR004_PORTS:-0 1 2 3}"                            # Einschuebe des TR-004
-SMARTCTL="${TR004_SMARTCTL:-smartctl}"
+SMARTCTL="${TR004_SMARTCTL:-$( [ -x /usr/sbin/smartctl.real ] && echo /usr/sbin/smartctl.real || echo smartctl)}"
 DEVTYPE="${TR004_DEVTYPE:-jmb39x-q}"                       # QNAP-Variante des JMicron-Protokolls
 ENABLED_FLAG="${TR004_ENABLED_FLAG:-/boot/config/tr004-smart.enabled}"
 DEV_GLOB="${TR004_DEV_GLOB:-/dev/disk/by-id/usb-QNAP_TR-004_DISK*}"
@@ -203,6 +203,16 @@ cmd_read() {
     # nach JEDEM Befehl pruefen - so bleibt nie etwas laenger als einen Befehl lang liegen
     verify_restore "$snap" || die "Wiederherstellung fehlgeschlagen - Abbild liegt in $snap"
     [ -z "$res" ] && continue
+    # Textausgabe fuer Unraid (smartctl-Vermittler, siehe unraid/smartctl-wrapper)
+    if [ "${TR004_SAVE_TEXT:-1}" = 1 ] && jq -e '.smart_status' <<<"$res" >/dev/null 2>&1; then
+      "$SMARTCTL" -d "$DEVTYPE,$p,s$MAILBOX_LBA" -a "$mb" > "$STATE_DIR/port$p.txt.tmp" 2>/dev/null
+      echo $? > "$STATE_DIR/port$p.rc"
+      verify_restore "$snap" || die "Wiederherstellung fehlgeschlagen - Abbild liegt in $snap"
+      # Kopfzeile so anpassen, dass sie wie ein normaler Aufruf aussieht
+      sed -e "s#^Device type:.*##" "$STATE_DIR/port$p.txt.tmp" > "$STATE_DIR/port$p.txt" && rm -f "$STATE_DIR/port$p.txt.tmp"
+    else
+      rm -f "$STATE_DIR/port$p.txt" "$STATE_DIR/port$p.rc"
+    fi
     all=$(jq -c --argjson p "$p" --argjson r "$res" '. + [{port:$p, smart:$r}]' <<<"$all" 2>/dev/null || echo "$all")
   done
   trap - EXIT INT TERM

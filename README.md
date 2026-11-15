@@ -67,11 +67,28 @@ TR004_PORTS="0 1 2 3"    # Einschübe
 
 Abbilder liegen in `/var/lib/tr004-smart/snap-*` (die letzten 20 bleiben).
 
+## Werte in der Unraid-Oberfläche
+
+Unraid fragt SMART selbst mit `smartctl` ab. Damit es dabei nie den TR-004 direkt anspricht,
+installiert `unraid/install.sh` einen **smartctl-Vermittler** (`unraid/smartctl-wrapper`):
+
+* Für TR-004-Platten liefert er die zuletzt von `tr004-smart read` gelesene Ausgabe
+  (Temperatur, Gesundheit, Attribute, alles wie gewohnt in Main/Dashboard).
+* `jmb39x`/`jms56x`-Aufrufe ohne eigenen Briefkasten-Sektor werden **blockiert**.
+* Alle anderen Platten gehen unverändert an das echte smartctl (`/usr/sbin/smartctl.real`).
+
+```bash
+cp unraid/smartctl-wrapper /boot/config/custom/smartctl-tr004-wrapper
+cp unraid/install.sh /boot/config/custom/tr004-install.sh
+echo 'bash /boot/config/custom/tr004-install.sh' >> /boot/config/go      # nach jedem Start
+cp unraid/tr004-smart.cron /boot/config/plugins/dynamix/ && /usr/local/sbin/update_cron
+```
+
 ## Unraid und Home Assistant
 
-Siehe [unraid/](unraid/): ein Cron-Eintrag, der einmal pro Stunde liest, und ein Beispiel,
+Siehe [unraid/](unraid/): ein Cron-Eintrag, der alle 10 Minuten liest, und ein Beispiel,
 wie die Temperaturen in ein Home-Assistant-Webhook-Skript kommen.
-Öfter als stündlich abzufragen bringt nichts und erhöht nur das Risiko.
+Öfter als alle 10 Minuten abzufragen bringt nichts.
 
 ## Wichtig
 

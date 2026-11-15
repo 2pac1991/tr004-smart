@@ -1,0 +1,42 @@
+#!/bin/bash
+# smartctl-Vermittler fuer Unraid + QNAP TR-004 (Teil von tr004-smart)
+#
+# Wird beim Start als /usr/sbin/smartctl installiert (das Original heisst dann smartctl.real).
+#  * Fragt Unraid (oder sonst jemand) eine TR-004-Platte ab, kommt die zuletzt von
+#    tr004-smart sicher gelesene Ausgabe zurueck - die Hardware wird dabei nicht angefasst.
+#  * jmb39x/jms56x-Aufrufe OHNE eigenen Briefkasten-Sektor (also mit Sektor 33) werden
+#    blockiert, damit nichts mehr die GPT zerstoeren kann.
+#  * Alles andere geht unveraendert an das echte smartctl.
+REAL=/usr/sbin/smartctl.real
+STATE=/var/lib/tr004-smart
+args=" $* "
+
+case "$args" in
+  *jmb39x*|*jms56x*)
+    re='(jmb39x|jms56x)[^ ]*,s[0-9]+'
+    if ! [[ "$args" =~ $re ]]; then
+      echo "tr004-smart: unsicherer Aufruf blockiert (Briefkasten-Sektor 33 zerstoert die GPT): smartctl$args" >&2
+      logger -t tr004-smart "blockiert: smartctl$args" 2>/dev/null
+      exit 2
+    fi
+    exec "$REAL" "$@" ;;
+esac
+
+dev="${!#}"
+real=$(readlink -f -- "$dev" 2>/dev/null)
+if [ -n "$real" ] && [ -b "$real" ]; then
+  for l in /dev/disk/by-id/usb-QNAP_TR-004_DISK*; do
+    case "$l" in *-part[0-9]*) continue ;; esac
+    [ "$(readlink -f -- "$l")" = "$real" ] || continue
+    n=$(basename "$l" | sed -E 's/^usb-QNAP_TR-004_DISK0*([0-9]+)_.*/\1/')
+    f="$STATE/port$n.txt"
+    if [ -s "$f" ]; then
+      cat "$f"
+      exit "$(cat "$STATE/port$n.rc" 2>/dev/null || echo 0)"
+    fi
+    # noch keine Daten: ehrlich melden statt die Hardware zu fragen
+    echo "tr004-smart: noch keine SMART-Daten fuer $dev (Einschub $n) - 'tr004-smart read' ausfuehren" >&2
+    exit 1
+  done
+fi
+exec "$REAL" "$@"
