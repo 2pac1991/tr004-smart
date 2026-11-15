@@ -28,7 +28,7 @@ PORTS="${TR004_PORTS:-0 1 2 3}"                            # Einschuebe des TR-0
 SMARTCTL="${TR004_SMARTCTL:-smartctl}"
 DEVTYPE="${TR004_DEVTYPE:-jmb39x-q}"                       # QNAP-Variante des JMicron-Protokolls
 ENABLED_FLAG="${TR004_ENABLED_FLAG:-/boot/config/tr004-smart.enabled}"
-DEV_GLOB="${TR004_DEV_GLOB:-/dev/disk/by-id/usb-QNAP_TR-004_DISK*-0:0}"
+DEV_GLOB="${TR004_DEV_GLOB:-/dev/disk/by-id/usb-QNAP_TR-004_DISK*}"
 LOCK="${TR004_LOCK:-/var/lock/tr004-smart.lock}"
 
 # ---------- Hilfsfunktionen ----------
@@ -50,7 +50,21 @@ u32le()  { od -An -tu4 -j"$2" -N4 "$1" | tr -d ' '; }
 u64le()  { od -An -tu8 -j"$2" -N8 "$1" | tr -d ' '; }
 
 tr004_devices() {
-  local d; for d in $DEV_GLOB; do [ -e "$d" ] && readlink -f "$d"; done | sort -u
+  local d; for d in $DEV_GLOB; do
+    case "$d" in *-part[0-9]*) continue ;; esac
+    [ -e "$d" ] && readlink -f "$d"
+  done | sort -u
+}
+
+# Kennung (erste 16 Bytes) des ersten Partitionssektors jeder Platte - nur zur Kontrolle,
+# wird NIE zurueckgeschrieben (das Dateisystem darf diesen Sektor selbst aendern).
+part_magic() {
+  local d typ first last
+  for d in $(tr004_devices); do
+    read -r typ first last < <(layout "$d")
+    [ "$first" -gt 0 ] 2>/dev/null || continue
+    echo "$d $first $(rd "$d" "$first" 1 | head -c 4 | od -An -tx1 | tr -d ' \n')"
+  done
 }
 
 # Erste belegte Partition und Ende der Partitionstabelle bestimmen.
@@ -58,7 +72,7 @@ tr004_devices() {
 layout() {
   local dev="$1" t; t=$(mktemp); rd "$dev" 0 34 > "$t"
   local sig; sig=$(od -An -tx1 -j510 -N2 "$t" | tr -d ' ')
-  if [ "$(dd if="$t" bs=1 skip=512 count=8 2>/dev/null)" = "EFI PART" ]; then
+  if [ "$(dd if="$t" bs=1 skip=512 count=8 2>/dev/null | tr -d "\000")" = "EFI PART" ]; then
     local ent_lba n_ent ent_sz first=""
     ent_lba=$(u64le "$t" $((512+72))); n_ent=$(u32le "$t" $((512+80))); ent_sz=$(u32le "$t" $((512+84)))
     local last_tab=$(( ent_lba + (n_ent*ent_sz + 511)/512 - 1 ))
@@ -180,6 +194,7 @@ cmd_read() {
   SNAP="$STATE_DIR/snap-$(date +%Y%m%d-%H%M%S)-$$"
   local snap="$SNAP"
   snapshot_all "$snap" || die "Abbild konnte nicht erstellt werden"
+  local magic_before; magic_before=$(part_magic)
   trap 'verify_restore "$SNAP"' EXIT INT TERM
 
   local out="$STATE_DIR/last.json" p res all="[]"
@@ -192,6 +207,8 @@ cmd_read() {
   done
   trap - EXIT INT TERM
   verify_restore "$snap" || die "Wiederherstellung fehlgeschlagen - Abbild liegt in $snap"
+  [ "$(part_magic)" = "$magic_before" ] || \
+    die "Kennung am Partitionsanfang hat sich veraendert! Vorher: $magic_before / Nachher: $(part_magic) - Array pruefen, tr004-smart nicht mehr benutzen"
 
   jq -c '[.[] | {port, model: .smart.model_name, serial: .smart.serial_number,
                  passed: .smart.smart_status.passed, temp: .smart.temperature.current,
