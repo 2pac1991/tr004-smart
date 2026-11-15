@@ -4,8 +4,9 @@ SMART-Werte (Temperatur, Gesundheit, Sektorfehler) von Festplatten im **QNAP TR-
 unter **Unraid/Linux** auslesen – ohne die Partitionstabellen zu zerstören.
 
 > **Status: experimentell.** Die Sicherheitslogik ist mit simulierten Platten getestet
-> (`tests/run-tests.sh`). Ein Test am echten Gerät mit einer leeren Platte steht noch aus.
-> Nutzung auf eigenes Risiko.
+> (`tests/run-tests.sh`) und lief am 15.11.2026 erfolgreich an einem echten TR-004 unter
+> Unraid 7 (smartctl 7.5, Seagate 4 TB GPT + WD 1 TB MBR): Werte gelesen, Sektoren 0–63
+> danach bitgenau unverändert. Nutzung auf eigenes Risiko.
 
 ## Das Problem
 
@@ -41,6 +42,9 @@ mkdir -p /boot/config/custom
 wget -O /boot/config/custom/tr004-smart https://raw.githubusercontent.com/2pac1991/tr004-smart/main/tr004-smart
 chmod +x /boot/config/custom/tr004-smart
 ```
+
+Der Unraid-USB-Stick erlaubt keine direkte Ausführung, daher immer mit `bash` aufrufen:
+`bash /boot/config/custom/tr004-smart list`
 
 Voraussetzungen: `smartctl` ab 7.3 (mit `jmb39x-q`), `jq`, `flock`. Bei Unraid ist das dabei.
 
