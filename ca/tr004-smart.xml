@@ -3,7 +3,7 @@
   <Name>TR-004 SMART</Name>
   <PluginURL>https://raw.githubusercontent.com/2pac1991/tr004-smart/main/plugin/tr004-smart.plg</PluginURL>
   <PluginAuthor>2pac1991</PluginAuthor>
-  <Support>SUPPORT_THREAD_URL</Support>
+  <Support>https://forums.unraid.net/topic/201301-plugin-tr-004-smart-safe-smart-data-for-disks-in-a-qnap-tr-004-beta/</Support>
   <Project>https://github.com/2pac1991/tr004-smart</Project>
   <Icon>https://raw.githubusercontent.com/2pac1991/tr004-smart/main/ca/tr004-smart.png</Icon>
   <Category>Tools:Utilities Drivers:</Category>

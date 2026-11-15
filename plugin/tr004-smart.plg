@@ -11,7 +11,7 @@
 ]>
 <PLUGIN name="&name;" author="&author;" version="&version;" pluginURL="&pluginURL;"
         launch="Utilities/TR004Smart" icon="hdd-o" min="6.12.0"
-        support="https://github.com/2pac1991/tr004-smart/issues">
+        support="https://forums.unraid.net/topic/201301-plugin-tr-004-smart-safe-smart-data-for-disks-in-a-qnap-tr-004-beta/">
 
 <CHANGES>
 ##&name;
