@@ -1,0 +1,3 @@
+# Nach /boot/config/plugins/dynamix/ kopieren, dann: /usr/local/sbin/update_cron
+# SMART der TR-004-Platten einmal pro Stunde lesen (Ergebnis: /var/lib/tr004-smart/last.json)
+7 * * * * /boot/config/custom/tr004-smart read >/dev/null 2>&1

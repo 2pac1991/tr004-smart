@@ -1,0 +1,219 @@
+#!/bin/bash
+# tr004-smart - SMART-Werte von Platten im QNAP TR-004 (JMicron JMB39x) sicher auslesen.
+#
+# Der TR-004 reicht SMART-Befehle nicht per USB durch. Die einzige Methode (auch die der
+# QNAP-Software) ist ein "Briefkasten"-Sektor: Ein Befehlspaket wird in einen Sektor einer
+# Platte im Gehaeuse geschrieben, der JMicron-Chip antwortet ueber denselben Sektor.
+# smartctl kann das (-d jmb39x-q). Geht dabei etwas schief, bleibt das Paket auf der Platte
+# liegen - in Sektor 33 (Standard) zerstoert das die GPT-Partitionstabelle.
+#
+# Dieses Skript macht das sicher:
+#   * nie Sektor 33, sondern ein nachweislich freier Sektor in der Luecke vor der 1. Partition
+#   * Abbild der Sektoren 0..63 ALLER TR-004-Platten vorher, Vergleich nachher,
+#     jede Abweichung wird sofort zurueckgeschrieben und geprueft
+#   * nur ein Lauf gleichzeitig (Sperre), Abbruch bei unerwarteter Plattenaufteilung
+#
+# Lizenz: MIT - Nutzung auf eigenes Risiko, siehe README.md
+
+set -u
+VERSION="0.1.0"
+
+# ---------- Einstellungen (per Umgebung oder /boot/config/tr004-smart.conf ueberschreibbar) ----------
+CONF="${TR004_CONF:-/boot/config/tr004-smart.conf}"
+[ -r "$CONF" ] && . "$CONF"
+STATE_DIR="${TR004_STATE_DIR:-/var/lib/tr004-smart}"     # Sicherungen + Ergebnisse
+SNAP_SECTORS="${TR004_SNAP_SECTORS:-64}"                  # so viele Sektoren am Plattenanfang werden gesichert
+MAILBOX_LBA="${TR004_MAILBOX_LBA:-48}"                    # Briefkasten-Sektor (nie 33!)
+PORTS="${TR004_PORTS:-0 1 2 3}"                            # Einschuebe des TR-004
+SMARTCTL="${TR004_SMARTCTL:-smartctl}"
+DEVTYPE="${TR004_DEVTYPE:-jmb39x-q}"                       # QNAP-Variante des JMicron-Protokolls
+ENABLED_FLAG="${TR004_ENABLED_FLAG:-/boot/config/tr004-smart.enabled}"
+DEV_GLOB="${TR004_DEV_GLOB:-/dev/disk/by-id/usb-QNAP_TR-004_DISK*-0:0}"
+LOCK="${TR004_LOCK:-/var/lock/tr004-smart.lock}"
+
+# ---------- Hilfsfunktionen ----------
+die()  { echo "FEHLER: $*" >&2; logger -t tr004-smart "FEHLER: $*" 2>/dev/null; exit 2; }
+warn() { echo "WARNUNG: $*" >&2; logger -t tr004-smart "WARNUNG: $*" 2>/dev/null; }
+info() { [ "${QUIET:-0}" = 1 ] || echo "$*" >&2; }
+
+# Sektoren lesen/schreiben - auf Blockgeraeten am Cache vorbei (O_DIRECT)
+rd() {  # rd <dev> <lba> <anzahl>
+  local f=""; [ -b "$1" ] && f="iflag=direct"
+  dd if="$1" bs=512 skip="$2" count="$3" $f 2>/dev/null
+}
+wr() {  # wr <dev> <lba> <datei>   (Datei = ganze Sektoren)
+  local f="conv=notrunc"; [ -b "$1" ] && f="oflag=direct,sync conv=notrunc"
+  dd if="$3" of="$1" bs=512 seek="$2" $f 2>/dev/null && sync
+}
+is_zero() { [ -z "$(tr -d '\000' < "$1" | head -c1)" ]; }
+u32le()  { od -An -tu4 -j"$2" -N4 "$1" | tr -d ' '; }
+u64le()  { od -An -tu8 -j"$2" -N8 "$1" | tr -d ' '; }
+
+tr004_devices() {
+  local d; for d in $DEV_GLOB; do [ -e "$d" ] && readlink -f "$d"; done | sort -u
+}
+
+# Erste belegte Partition und Ende der Partitionstabelle bestimmen.
+# Ausgabe: "<typ> <erster_partitionsstart> <letzter_tabellensektor>"
+layout() {
+  local dev="$1" t; t=$(mktemp); rd "$dev" 0 34 > "$t"
+  local sig; sig=$(od -An -tx1 -j510 -N2 "$t" | tr -d ' ')
+  if [ "$(dd if="$t" bs=1 skip=512 count=8 2>/dev/null)" = "EFI PART" ]; then
+    local ent_lba n_ent ent_sz first=""
+    ent_lba=$(u64le "$t" $((512+72))); n_ent=$(u32le "$t" $((512+80))); ent_sz=$(u32le "$t" $((512+84)))
+    local last_tab=$(( ent_lba + (n_ent*ent_sz + 511)/512 - 1 ))
+    local tabf; tabf=$(mktemp); rd "$dev" "$ent_lba" $(( (n_ent*ent_sz+511)/512 )) > "$tabf"
+    local i s
+    for ((i=0;i<n_ent;i++)); do
+      s=$(u64le "$tabf" $((i*ent_sz+32)))
+      [ "$s" != "0" ] && { [ -z "$first" ] || [ "$s" -lt "$first" ]; } && first=$s
+    done
+    rm -f "$tabf" "$t"; echo "gpt ${first:-0} $last_tab"; return
+  fi
+  if [ "$sig" = "55aa" ]; then
+    local i s first=""
+    for i in 0 1 2 3; do
+      s=$(u32le "$t" $((446+i*16+8)))
+      [ "$s" != "0" ] && { [ -z "$first" ] || [ "$s" -lt "$first" ]; } && first=$s
+    done
+    rm -f "$t"; echo "mbr ${first:-0} 0"; return
+  fi
+  rm -f "$t"; echo "none 0 0"
+}
+
+# Ist MAILBOX_LBA auf diesem Geraet nachweislich ungenutzt?
+mailbox_ok() {
+  local dev="$1" typ first last; read -r typ first last < <(layout "$dev")
+  [ "$MAILBOX_LBA" -eq 33 ] && { echo "Sektor 33 ist gesperrt (gehoert zur GPT)"; return 1; }
+  [ "$MAILBOX_LBA" -ge "$SNAP_SECTORS" ] && { echo "Briefkasten muss < $SNAP_SECTORS sein"; return 1; }
+  case "$typ" in
+    gpt) [ "$MAILBOX_LBA" -le "$last" ] && { echo "Sektor $MAILBOX_LBA liegt in der GPT-Tabelle (bis $last)"; return 1; } ;;
+    mbr) ;;
+    *)   echo "keine erkennbare Partitionstabelle - zu unsicher"; return 1 ;;
+  esac
+  [ "$first" -le "$MAILBOX_LBA" ] && { echo "1. Partition beginnt bei $first, Sektor $MAILBOX_LBA waere darin"; return 1; }
+  [ "$first" -lt "$SNAP_SECTORS" ] && { echo "1. Partition beginnt vor Sektor $SNAP_SECTORS ($first)"; return 1; }
+  local s; s=$(mktemp); rd "$dev" "$MAILBOX_LBA" 1 > "$s"
+  if ! is_zero "$s"; then
+    if [ -n "$(tr -d '\000' < "$s" | head -c 64)" ] && od -An -tx1 -N4 "$s" | tr -s " " | grep -q "25 03 7b 19"; then
+      echo "Sektor $MAILBOX_LBA enthaelt ein altes JMicron-Paket (Rest eines frueheren Abbruchs)"
+    else
+      echo "Sektor $MAILBOX_LBA ist nicht leer"
+    fi
+    rm -f "$s"; return 1
+  fi
+  rm -f "$s"; echo "$typ, 1. Partition ab $first, Sektor $MAILBOX_LBA frei"; return 0
+}
+
+snapshot_all() {  # schreibt <dir>/<name>.bin fuer jede TR-004-Platte
+  local dir="$1" d; mkdir -p "$dir"
+  for d in $(tr004_devices); do
+    rd "$d" 0 "$SNAP_SECTORS" > "$dir/$(basename "$d").bin" || return 1
+    [ "$(stat -c%s "$dir/$(basename "$d").bin" 2>/dev/null || stat -f%z "$dir/$(basename "$d").bin")" -eq $((SNAP_SECTORS*512)) ] || return 1
+  done
+}
+
+# Vergleicht den aktuellen Stand mit dem Abbild und schreibt abweichende Sektoren zurueck.
+verify_restore() {
+  local dir="$1" d f bad=0 i now; now=$(mktemp -d)
+  for d in $(tr004_devices); do
+    f="$dir/$(basename "$d").bin"; [ -f "$f" ] || continue
+    rd "$d" 0 "$SNAP_SECTORS" > "$now/cur.bin"
+    cmp -s "$f" "$now/cur.bin" && continue
+    for ((i=0;i<SNAP_SECTORS;i++)); do
+      dd if="$f" bs=512 skip=$i count=1 2>/dev/null > "$now/a"
+      dd if="$now/cur.bin" bs=512 skip=$i count=1 2>/dev/null > "$now/b"
+      cmp -s "$now/a" "$now/b" && continue
+      warn "$d Sektor $i wurde veraendert - wird wiederhergestellt"
+      wr "$d" "$i" "$now/a"
+      rd "$d" "$i" 1 > "$now/b"
+      if cmp -s "$now/a" "$now/b"; then info "  $d Sektor $i wiederhergestellt"
+      else warn "$d Sektor $i konnte NICHT wiederhergestellt werden! Abbild: $f"; bad=1; fi
+    done
+  done
+  rm -rf "$now"; return $bad
+}
+
+# smartctl-Aufruf fuer einen Einschub ueber die Briefkasten-Platte
+query_port() {
+  local mbdev="$1" port="$2"
+  "$SMARTCTL" -d "$DEVTYPE,$port,s$MAILBOX_LBA" -a -j "$mbdev" 2>/dev/null
+}
+
+usage() {
+cat <<EOF
+tr004-smart $VERSION - SMART fuer QNAP TR-004 sicher auslesen
+
+  tr004-smart list            TR-004-Platten und Briefkasten-Pruefung anzeigen (nur lesen)
+  tr004-smart check           wie list, Rueckgabe 0 nur wenn alles sicher ist
+  tr004-smart read [--json]   SMART aller Einschuebe auslesen (schreibt den Briefkasten-Sektor)
+  tr004-smart restore <dir>   Sektoren 0..$((SNAP_SECTORS-1)) aus einem Abbild-Ordner zurueckpruefen/-schreiben
+  tr004-smart enable          echtes Auslesen freischalten (legt $ENABLED_FLAG an)
+
+Einstellungen: $CONF  (MAILBOX_LBA=$MAILBOX_LBA, PORTS="$PORTS")
+EOF
+}
+
+cmd_list() {
+  local d ok=0 msg devs; devs=$(tr004_devices)
+  [ -z "$devs" ] && { echo "Kein QNAP TR-004 gefunden ($DEV_GLOB)"; return 1; }
+  for d in $devs; do
+    msg=$(mailbox_ok "$d"); local rc=$?
+    printf "%-10s %-6s %s\n" "$d" "$([ $rc -eq 0 ] && echo OK || echo NEIN)" "$msg"
+    [ $rc -eq 0 ] && ok=1
+  done
+  [ $ok -eq 1 ]
+}
+
+cmd_read() {
+  local json=0; [ "${1:-}" = "--json" ] && json=1
+  [ -f "$ENABLED_FLAG" ] || die "Echtes Auslesen ist noch nicht freigeschaltet. Erst 'tr004-smart check', dann 'tr004-smart enable'."
+  command -v "$SMARTCTL" >/dev/null || die "smartctl nicht gefunden"
+  command -v jq >/dev/null || die "jq nicht gefunden"
+  exec 9>"$LOCK"; flock -w 120 9 || die "anderer Lauf aktiv"
+
+  # Briefkasten-Platte waehlen: erste TR-004-Platte, auf der der Sektor nachweislich frei ist
+  local d mb=""
+  for d in $(tr004_devices); do mailbox_ok "$d" >/dev/null && { mb="$d"; break; }; done
+  [ -n "$mb" ] || die "keine Platte mit sicherem Briefkasten-Sektor - siehe 'tr004-smart list'"
+
+  SNAP="$STATE_DIR/snap-$(date +%Y%m%d-%H%M%S)-$$"
+  local snap="$SNAP"
+  snapshot_all "$snap" || die "Abbild konnte nicht erstellt werden"
+  trap 'verify_restore "$SNAP"' EXIT INT TERM
+
+  local out="$STATE_DIR/last.json" p res all="[]"
+  for p in $PORTS; do
+    res=$(query_port "$mb" "$p")
+    # nach JEDEM Befehl pruefen - so bleibt nie etwas laenger als einen Befehl lang liegen
+    verify_restore "$snap" || die "Wiederherstellung fehlgeschlagen - Abbild liegt in $snap"
+    [ -z "$res" ] && continue
+    all=$(jq -c --argjson p "$p" --argjson r "$res" '. + [{port:$p, smart:$r}]' <<<"$all" 2>/dev/null || echo "$all")
+  done
+  trap - EXIT INT TERM
+  verify_restore "$snap" || die "Wiederherstellung fehlgeschlagen - Abbild liegt in $snap"
+
+  jq -c '[.[] | {port, model: .smart.model_name, serial: .smart.serial_number,
+                 passed: .smart.smart_status.passed, temp: .smart.temperature.current,
+                 power_on_hours: .smart.power_on_time.hours,
+                 realloc: ([.smart.ata_smart_attributes.table[]? | select(.id==5) | .raw.value][0]),
+                 pending: ([.smart.ata_smart_attributes.table[]? | select(.id==197) | .raw.value][0]),
+                 offline_unc: ([.smart.ata_smart_attributes.table[]? | select(.id==198) | .raw.value][0])}]' \
+     <<<"$all" > "$out.tmp" && mv "$out.tmp" "$out"
+  # alte Abbilder aufraeumen (die letzten 20 bleiben)
+  ls -1dt "$STATE_DIR"/snap-* 2>/dev/null | tail -n +21 | xargs -r rm -rf
+
+  if [ $json = 1 ]; then cat "$out"
+  else jq -r '.[] | "Port \(.port): \(.model // "?") \(.serial // "") | \(if .passed then "OK" else "FEHLER" end) | \(.temp // "?") C | \(.power_on_hours // "?") h | realloc \(.realloc // 0) pending \(.pending // 0)"' "$out"
+  fi
+}
+
+case "${1:-}" in
+  list)    cmd_list ;;
+  check)   cmd_list ;;
+  read)    shift; cmd_read "$@" ;;
+  restore) [ -d "${2:-}" ] || die "Abbild-Ordner angeben"; verify_restore "$2" ;;
+  enable)  cmd_list && { touch "$ENABLED_FLAG"; echo "freigeschaltet: $ENABLED_FLAG"; } ;;
+  -v|--version) echo "$VERSION" ;;
+  *)       usage ;;
+esac
