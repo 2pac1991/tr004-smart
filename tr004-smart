@@ -16,7 +16,7 @@
 # Lizenz: MIT - Nutzung auf eigenes Risiko, siehe README.md
 
 set -u
-VERSION="0.1.0"
+VERSION="0.2.0"
 
 # ---------- Einstellungen (per Umgebung oder /boot/config/tr004-smart.conf ueberschreibbar) ----------
 CONF="${TR004_CONF:-/boot/config/tr004-smart.conf}"
@@ -148,24 +148,77 @@ verify_restore() {
   rm -rf "$now"; return $bad
 }
 
-# smartctl-Aufruf fuer einen Einschub ueber die Briefkasten-Platte
-query_port() {
-  local mbdev="$1" port="$2"
-  "$SMARTCTL" -d "$DEVTYPE,$port,s$MAILBOX_LBA" -a -j "$mbdev" 2>/dev/null
+# ---------- geschuetzter Lauf: Sperre, Abbild, nach jedem Befehl pruefen ----------
+MB=""
+begin_protected() {
+  [ -f "$ENABLED_FLAG" ] || die "Echtes Auslesen ist noch nicht freigeschaltet. Erst 'tr004-smart check', dann 'tr004-smart enable'."
+  command -v "$SMARTCTL" >/dev/null || die "smartctl nicht gefunden"
+  command -v jq >/dev/null || die "jq nicht gefunden"
+  mkdir -p "$STATE_DIR"
+  exec 9>"$LOCK"; flock -w 120 9 || die "anderer Lauf aktiv"
+  local d; MB=""
+  for d in $(tr004_devices); do mailbox_ok "$d" >/dev/null && { MB="$d"; break; }; done
+  [ -n "$MB" ] || die "keine Platte mit sicherem Briefkasten-Sektor - siehe 'tr004-smart list'"
+  SNAP="$STATE_DIR/snap-$(date +%Y%m%d-%H%M%S)-$$"
+  snapshot_all "$SNAP" || die "Abbild konnte nicht erstellt werden"
+  MAGIC_BEFORE=$(part_magic)
+  trap 'verify_restore "$SNAP"' EXIT INT TERM
+}
+end_protected() {
+  trap - EXIT INT TERM
+  verify_restore "$SNAP" || die "Wiederherstellung fehlgeschlagen - Abbild liegt in $SNAP"
+  [ "$(part_magic)" = "$MAGIC_BEFORE" ] || \
+    die "Kennung am Partitionsanfang hat sich veraendert! Vorher: $MAGIC_BEFORE / Nachher: $(part_magic) - Array pruefen, tr004-smart nicht mehr benutzen"
+  ls -1dt "$STATE_DIR"/snap-* 2>/dev/null | tail -n +21 | xargs -r rm -rf
+}
+# ein smartctl-Befehl an Einschub <port>; Ausgabe auf stdout, Rueckgabewert von smartctl
+jm() {
+  local port="$1"; shift
+  "$SMARTCTL" -d "$DEVTYPE,$port,s$MAILBOX_LBA" "$@" "$MB" 2>/dev/null; local rc=$?
+  verify_restore "$SNAP" || die "Wiederherstellung fehlgeschlagen - Abbild liegt in $SNAP"
+  return $rc
+}
+# smartctl-Text so umschreiben, als waere die Platte direkt angeschlossen
+clean_text() { sed -e '/^Device type:/d'; }
+
+# Kennzahlen aus smartctl-Text (Ausgabe als JSON-Objekt)
+summarize() {  # summarize <port> <volltext-datei> <attribut-datei>
+  local port="$1" full="$2" attr="$3"
+  [ -f "$full" ] || full=/dev/null
+  [ -f "$attr" ] || attr=/dev/null
+  awk -v port="$port" '
+    /^(Device Model|Model Number):/ { sub(/^[^:]*:[ \t]*/,""); model=$0 }
+    /^Serial Number:/               { sub(/^[^:]*:[ \t]*/,""); serial=$0 }
+    /overall-health self-assessment test result:/ { passed = ($NF=="PASSED") ? "true" : ($NF ~ /^FAIL/ ? "false" : "") }
+    /^ *[0-9]+ [A-Za-z_]/ && NF>=10 {
+      id=$1; raw=$10
+      if (id==194) t=raw; if (id==190) t190=raw
+      if (id==9) poh=raw; if (id==5) r5=raw; if (id==197) r197=raw; if (id==198) r198=raw
+    }
+    END {
+      if (t=="") t=t190
+      q="\""; gsub(/"/,"",model); gsub(/"/,"",serial)
+      printf "{\"port\":%d,\"model\":%s,\"serial\":%s,\"passed\":%s,\"temp\":%s,\"power_on_hours\":%s,\"realloc\":%s,\"pending\":%s,\"offline_unc\":%s}\n", port,
+        (model==""?"null":q model q), (serial==""?"null":q serial q), (passed==""?"null":passed),
+        (t==""?"null":t+0), (poh==""?"null":poh+0), (r5==""?"null":r5+0), (r197==""?"null":r197+0), (r198==""?"null":r198+0)
+    }' "$full" "$attr" 2>/dev/null
 }
 
 usage() {
-cat <<EOF
+cat <<USAGE
 tr004-smart $VERSION - SMART fuer QNAP TR-004 sicher auslesen
 
-  tr004-smart list            TR-004-Platten und Briefkasten-Pruefung anzeigen (nur lesen)
-  tr004-smart check           wie list, Rueckgabe 0 nur wenn alles sicher ist
-  tr004-smart read [--json]   SMART aller Einschuebe auslesen (schreibt den Briefkasten-Sektor)
-  tr004-smart restore <dir>   Sektoren 0..$((SNAP_SECTORS-1)) aus einem Abbild-Ordner zurueckpruefen/-schreiben
-  tr004-smart enable          echtes Auslesen freischalten (legt $ENABLED_FLAG an)
+  tr004-smart list              TR-004-Platten und Briefkasten-Pruefung anzeigen (nur lesen)
+  tr004-smart check             wie list, Rueckgabe 0 nur wenn alles sicher ist
+  tr004-smart read [--json]     Werte lesen: jedes Mal Gesundheit/Attribute, stuendlich alles (-x)
+  tr004-smart read --full       sofort alles lesen
+  tr004-smart exec <port> ARGS  smartctl-Befehl an Einschub <port> (z. B. -t short)
+  tr004-smart restore <dir>     Sektoren 0..$((SNAP_SECTORS-1)) aus einem Abbild-Ordner zurueckschreiben
+  tr004-smart enable            echtes Auslesen freischalten (legt $ENABLED_FLAG an)
 
+Ablage: $STATE_DIR/port<N>.full (smartctl -x), port<N>.attr (smartctl -H -A), last.json
 Einstellungen: $CONF  (MAILBOX_LBA=$MAILBOX_LBA, PORTS="$PORTS")
-EOF
+USAGE
 }
 
 cmd_list() {
@@ -179,75 +232,71 @@ cmd_list() {
   [ $ok -eq 1 ]
 }
 
+mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0; }
+
 cmd_read() {
-  local json=0; [ "${1:-}" = "--json" ] && json=1
-  [ -f "$ENABLED_FLAG" ] || die "Echtes Auslesen ist noch nicht freigeschaltet. Erst 'tr004-smart check', dann 'tr004-smart enable'."
-  command -v "$SMARTCTL" >/dev/null || die "smartctl nicht gefunden"
-  command -v jq >/dev/null || die "jq nicht gefunden"
-  exec 9>"$LOCK"; flock -w 120 9 || die "anderer Lauf aktiv"
+  local json=0 force_full=0 a
+  for a in "$@"; do case "$a" in --json) json=1 ;; --full) force_full=1 ;; esac; done
+  begin_protected
 
-  # Briefkasten-Platte waehlen: erste TR-004-Platte, auf der der Sektor nachweislich frei ist
-  local d mb=""
-  for d in $(tr004_devices); do mailbox_ok "$d" >/dev/null && { mb="$d"; break; }; done
-  [ -n "$mb" ] || die "keine Platte mit sicherem Briefkasten-Sektor - siehe 'tr004-smart list'"
-
-  SNAP="$STATE_DIR/snap-$(date +%Y%m%d-%H%M%S)-$$"
-  local snap="$SNAP"
-  snapshot_all "$snap" || die "Abbild konnte nicht erstellt werden"
-  local magic_before; magic_before=$(part_magic)
-  trap 'verify_restore "$SNAP"' EXIT INT TERM
-
-  # Schnelllauf: nur Einschuebe mit SMART-Daten; einmal pro Stunde alle Einschuebe durchsuchen
-  local ports="$PORTS" act="$STATE_DIR/active_ports" full=1 mt
-  mt=$(stat -c %Y "$act" 2>/dev/null || stat -f %m "$act" 2>/dev/null || echo 0)
-  if [ -s "$act" ] && [ $(( $(date +%s) - mt )) -lt 3600 ] && [ "${TR004_FULL:-0}" != 1 ]; then
-    ports=$(cat "$act"); full=0
+  # Voll-Lauf (smartctl -x, alle Einschuebe) einmal pro Stunde oder auf Anforderung,
+  # sonst nur Gesundheit + Attribute der belegten Einschuebe (1 Befehl pro Platte)
+  local act="$STATE_DIR/active_ports" full=1 ports="$PORTS" p rc
+  if [ $force_full = 0 ] && [ ! -e "$STATE_DIR/refresh_full" ] && [ -s "$act" ] && \
+     [ $(( $(date +%s) - $(mtime "$act") )) -lt "${TR004_FULL_EVERY:-3600}" ] && [ "${TR004_FULL:-0}" != 1 ]; then
+    full=0; ports=$(cat "$act")
   fi
-  local out="$STATE_DIR/last.json" p res all="[]" found=""
+  rm -f "$STATE_DIR/refresh_full"
+  local found="" tmp; tmp=$(mktemp)
   for p in $ports; do
-    res=$(query_port "$mb" "$p")
-    # nach JEDEM Befehl pruefen - so bleibt nie etwas laenger als einen Befehl lang liegen
-    verify_restore "$snap" || die "Wiederherstellung fehlgeschlagen - Abbild liegt in $snap"
-    [ -z "$res" ] && continue
-    # Textausgabe fuer Unraid (smartctl-Vermittler, siehe unraid/smartctl-wrapper)
-    if [ "${TR004_SAVE_TEXT:-1}" = 1 ] && jq -e '.smart_status' <<<"$res" >/dev/null 2>&1; then
-      "$SMARTCTL" -d "$DEVTYPE,$p,s$MAILBOX_LBA" -a "$mb" > "$STATE_DIR/port$p.txt.tmp" 2>/dev/null
-      echo $? > "$STATE_DIR/port$p.rc"
-      verify_restore "$snap" || die "Wiederherstellung fehlgeschlagen - Abbild liegt in $snap"
-      # Kopfzeile so anpassen, dass sie wie ein normaler Aufruf aussieht
-      sed -e "s#^Device type:.*##" "$STATE_DIR/port$p.txt.tmp" > "$STATE_DIR/port$p.txt" && rm -f "$STATE_DIR/port$p.txt.tmp"
-      found="$found $p"
-    else
-      rm -f "$STATE_DIR/port$p.txt" "$STATE_DIR/port$p.rc"
+    if [ $full = 1 ]; then
+      jm "$p" -x > "$tmp"; rc=$?
+      if grep -q -E "overall-health self-assessment test result: (PASSED|FAIL)" "$tmp"; then
+        clean_text < "$tmp" > "$STATE_DIR/port$p.full"; echo $rc > "$STATE_DIR/port$p.full.rc"
+        found="$found $p"
+      else
+        rm -f "$STATE_DIR/port$p".*; continue
+      fi
     fi
-    all=$(jq -c --argjson p "$p" --argjson r "$res" '. + [{port:$p, smart:$r}]' <<<"$all" 2>/dev/null || echo "$all")
+    jm "$p" -H -A > "$tmp"; rc=$?
+    if grep -q -E "overall-health self-assessment test result: (PASSED|FAIL)" "$tmp"; then
+      clean_text < "$tmp" > "$STATE_DIR/port$p.attr"; echo $rc > "$STATE_DIR/port$p.attr.rc"
+      [ $full = 1 ] || found="$found $p"
+    fi
   done
-  trap - EXIT INT TERM
+  rm -f "$tmp"
   if [ $full = 1 ]; then echo $found > "$act"
-  elif [ "$(echo $found)" != "$(echo $ports)" ]; then rm -f "$act"; fi   # Aenderung -> naechstes Mal komplett suchen
-  verify_restore "$snap" || die "Wiederherstellung fehlgeschlagen - Abbild liegt in $snap"
-  [ "$(part_magic)" = "$magic_before" ] || \
-    die "Kennung am Partitionsanfang hat sich veraendert! Vorher: $magic_before / Nachher: $(part_magic) - Array pruefen, tr004-smart nicht mehr benutzen"
+  elif [ "$(echo $found)" != "$(echo $ports)" ]; then rm -f "$act"; fi   # Aenderung -> naechstes Mal komplett
+  end_protected
 
-  jq -c '[.[] | {port, model: .smart.model_name, serial: .smart.serial_number,
-                 passed: .smart.smart_status.passed, temp: .smart.temperature.current,
-                 power_on_hours: .smart.power_on_time.hours,
-                 realloc: ([.smart.ata_smart_attributes.table[]? | select(.id==5) | .raw.value][0]),
-                 pending: ([.smart.ata_smart_attributes.table[]? | select(.id==197) | .raw.value][0]),
-                 offline_unc: ([.smart.ata_smart_attributes.table[]? | select(.id==198) | .raw.value][0])}]' \
-     <<<"$all" > "$out.tmp" && mv "$out.tmp" "$out"
-  # alte Abbilder aufraeumen (die letzten 20 bleiben)
-  ls -1dt "$STATE_DIR"/snap-* 2>/dev/null | tail -n +21 | xargs -r rm -rf
+  local out="$STATE_DIR/last.json"
+  for p in $(cat "$act" 2>/dev/null); do
+    summarize "$p" "$STATE_DIR/port$p.full" "$STATE_DIR/port$p.attr"
+  done | jq -s -c '.' > "$out.tmp" && mv "$out.tmp" "$out"
 
   if [ $json = 1 ]; then cat "$out"
-  else jq -r '.[] | "Port \(.port): \(.model // "?") \(.serial // "") | \(if .passed then "OK" else "FEHLER" end) | \(.temp // "?") C | \(.power_on_hours // "?") h | realloc \(.realloc // 0) pending \(.pending // 0)"' "$out"
+  else jq -r '.[] | "Port \(.port): \(.model // "?") \(.serial // "") | \(if .passed then "OK" elif .passed == false then "FEHLER" else "?" end) | \(.temp // "?") C | \(.power_on_hours // "?") h | realloc \(.realloc // 0) pending \(.pending // 0)"' "$out"
   fi
+}
+
+# Befehl durchreichen (Selbsttest starten/abbrechen, SMART ein/aus ...), danach Voll-Lauf anstossen
+cmd_exec() {
+  local port="${1:-}"; shift
+  [[ "$port" =~ ^[0-9]+$ ]] || die "Einschub-Nummer fehlt"
+  begin_protected
+  local tmp rc; tmp=$(mktemp)
+  jm "$port" "$@" > "$tmp"; rc=$?
+  end_protected
+  clean_text < "$tmp"; rm -f "$tmp"
+  touch "$STATE_DIR/refresh_full"
+  return $rc
 }
 
 case "${1:-}" in
   list)    cmd_list ;;
   check)   cmd_list ;;
   read)    shift; cmd_read "$@" ;;
+  exec)    shift; cmd_exec "$@" ;;
   restore) [ -d "${2:-}" ] || die "Abbild-Ordner angeben"; verify_restore "$2" ;;
   enable)  cmd_list && { touch "$ENABLED_FLAG"; echo "freigeschaltet: $ENABLED_FLAG"; } ;;
   -v|--version) echo "$VERSION" ;;

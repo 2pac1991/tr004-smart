@@ -39,15 +39,24 @@ reset_disks() {
 # --- smartctl-Ersatz: zerstoert Briefkasten-Sektor UND Sektor 0 aller Platten ---------
 cat > "$T/bin/smartctl" <<'EOF'
 #!/bin/bash
-dev="${!#}"; typ="$2"; lba="${typ##*,s}"
+dev="${!#}"; typ="$2"; lba="${typ##*,s}"; port=$(echo "$typ" | cut -d, -f2)
+echo "$*" >> "$MOCK_LOG"
 printf '%%\x03\x7b\x19PAKET' | dd of="$dev" bs=512 seek="$lba" conv=notrunc 2>/dev/null
 [ "${MOCK_WIPE0:-1}" = 1 ] && for d in "$MOCK_DEVDIR"/*; do dd if=/dev/zero of="$d" bs=512 count=1 conv=notrunc 2>/dev/null; done
-port=$(echo "$typ" | cut -d, -f2)
-echo "{\"model_name\":\"MOCK$port\",\"serial_number\":\"SN$port\",\"smart_status\":{\"passed\":true},\"temperature\":{\"current\":3$port},\"power_on_time\":{\"hours\":100},\"ata_smart_attributes\":{\"table\":[{\"id\":5,\"raw\":{\"value\":0}},{\"id\":197,\"raw\":{\"value\":$port}}]}}"
+echo "smartctl 7.5 (mock)"
+echo "Device type: jmb39x"
+[ "$port" -ge 2 ] && { echo "Read SMART Data failed"; exit 4; }
+case " $* " in *" -x "*) echo "Device Model:     MOCK$port"; echo "Serial Number:    SN$port" ;; esac
+echo "SMART overall-health self-assessment test result: PASSED"
+echo "ID# ATTRIBUTE_NAME          FLAG     VALUE WORST THRESH TYPE      UPDATED  WHEN_FAILED RAW_VALUE"
+echo "  5 Reallocated_Sector_Ct   0x0033   100   100   010    Pre-fail  Always       -       0"
+echo "  9 Power_On_Hours          0x0032   090   090   000    Old_age   Always       -       100"
+echo "194 Temperature_Celsius     0x0022   032   041   000    Old_age   Always       -       3$port (0 24 0 0 0)"
+echo "197 Current_Pending_Sector  0x0012   100   100   000    Old_age   Always       -       $port"
 EOF
 chmod +x "$T/bin/smartctl"
 
-export PATH="$T/bin:$PATH" MOCK_DEVDIR="$T/dev"
+export PATH="$T/bin:$PATH" MOCK_DEVDIR="$T/dev" MOCK_LOG="$T/calls"
 export TR004_CONF=/nonexistent TR004_STATE_DIR="$T/state" TR004_DEV_GLOB="$T/dev/usb-QNAP_TR-004_DISK*-0:0"
 export TR004_ENABLED_FLAG="$T/enabled" TR004_LOCK="$T/lock" QUIET=1
 S="$ROOT/tr004-smart"
@@ -77,11 +86,31 @@ echo "Test 6: Lesen mit zerstoererischem smartctl - alles wird wiederhergestellt
 reset_disks; before=$(sha); touch "$T/enabled"
 out=$(bash "$S" read --json 2>"$T/err")
 [ "$(sha)" = "$before" ] && ok "Platten bitgenau wie vorher" || { bad "Platten veraendert"; cat "$T/err"; }
-[ "$(echo "$out" | jq length)" = 4 ] && ok "4 Einschuebe gelesen" || { bad "Ergebnis: $out"; }
+[ "$(echo "$out" | jq length)" = 2 ] && ok "2 belegte Einschuebe gelesen" || { bad "Ergebnis: $out"; }
+[ "$(echo "$out" | jq -r '.[0].model')" = MOCK0 ] && ok "Modell aus Vollbericht" || bad "Modell"
+grep -q "^Device type" "$T/state/port0.full" && bad "Kopfzeile nicht entfernt" || ok "Ausgabe sieht aus wie direkt angeschlossen"
 [ "$(echo "$out" | jq '.[1].temp')" = 31 ] && ok "Temperatur Port 1 = 31" || bad "Temperatur"
 grep -q "Sektor 0 wurde veraendert" "$T/err" && ok "Schaden gemeldet" || bad "keine Warnung"
 
-echo "Test 7: Abbruch mitten im Lauf - Sektoren trotzdem wiederhergestellt"
+echo "Test 7: zweiter Lauf ist ein Schnelllauf (nur -H -A der belegten Einschuebe)"
+reset_disks; before=$(sha); : > "$T/calls"
+bash "$S" read >/dev/null 2>"$T/err"
+[ "$(wc -l < "$T/calls" | tr -d ' ')" = 2 ] && ! grep -q -- " -x " "$T/calls" && ok "2 kurze Befehle" || { bad "Aufrufe:"; cat "$T/calls"; }
+[ "$(sha)" = "$before" ] && ok "Platten bitgenau wie vorher" || bad "Platten veraendert"
+
+echo "Test 8: Befehl durchreichen (Selbsttest)"
+reset_disks; before=$(sha); : > "$T/calls"
+bash "$S" exec 1 -t short >/dev/null 2>&1
+grep -q "jmb39x-q,1,s48 -t short" "$T/calls" && ok "Selbsttest an Einschub 1" || { bad "Aufruf:"; cat "$T/calls"; }
+[ -e "$T/state/refresh_full" ] && ok "Vollbericht wird danach erneuert" || bad "kein refresh_full"
+[ "$(sha)" = "$before" ] && ok "Platten bitgenau wie vorher" || bad "Platten veraendert"
+
+echo "Test 9: Vermittler blockiert unsichere Aufrufe"
+TR004_REAL=/bin/echo bash "$ROOT/unraid/smartctl-wrapper" -d jmb39x-q,0 -a /dev/null >/dev/null 2>&1; [ $? = 2 ] && ok "jmb39x ohne Sektor blockiert" || bad "nicht blockiert"
+out=$(TR004_REAL=/bin/echo bash "$ROOT/unraid/smartctl-wrapper" -d jmb39x-q,0,s48 -a /dev/null 2>&1); [ "$out" = "-d jmb39x-q,0,s48 -a /dev/null" ] && ok "mit Sektor durchgelassen" || bad "mit Sektor: $out"
+out=$(TR004_REAL=/bin/echo bash "$ROOT/unraid/smartctl-wrapper" -H /dev/null 2>&1); [ "$out" = "-H /dev/null" ] && ok "andere Platten unveraendert" || bad "andere: $out"
+
+echo "Test 10: Abbruch mitten im Lauf - Sektoren trotzdem wiederhergestellt"
 reset_disks; before=$(sha)
 cat > "$T/bin/smartctl" <<'EOF'
 #!/bin/bash

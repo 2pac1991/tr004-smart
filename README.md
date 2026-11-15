@@ -84,6 +84,18 @@ echo 'bash /boot/config/custom/tr004-install.sh' >> /boot/config/go      # nach 
 cp unraid/tr004-smart.cron /boot/config/plugins/dynamix/ && /usr/local/sbin/update_cron
 ```
 
+### Was geht und was nicht
+
+| In Unraid | Status |
+|---|---|
+| Temperatur, Gesundheit (PASSED/FAILED), alle SMART-Attribute | ja, jede Minute frisch |
+| Identität (Modell, Seriennummer, Firmware), Fähigkeiten, Fehlerprotokoll | ja, stündlich (`-x`) |
+| Selbsttest starten/abbrechen, SMART ein/aus | ja, wird geschützt durchgereicht |
+| Selbsttest-Protokoll, SCT-Temperaturverlauf, Geräte-Statistik | **nein** – der JMB39x kann keine 48-Bit-Logbefehle (`[JMB39x] not implemented`) |
+| Gerätename in Unraid | bleibt `QNAP_TR-004_DISKxx` (Unraid merkt sich die Platten unter diesem Namen) |
+
+Einschübe, deren Platte der Chip als „nicht verbunden“ meldet, werden wie leere Einschübe behandelt.
+
 ## Unraid und Home Assistant
 
 Siehe [unraid/](unraid/): ein Cron-Eintrag, der jede Minute liest (stündlich alle Einschübe, sonst nur die belegten), und ein Beispiel,
