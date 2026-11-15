@@ -58,7 +58,7 @@ chmod +x "$T/bin/smartctl"
 
 export PATH="$T/bin:$PATH" MOCK_DEVDIR="$T/dev" MOCK_LOG="$T/calls"
 export TR004_CONF=/nonexistent TR004_STATE_DIR="$T/state" TR004_DEV_GLOB="$T/dev/usb-QNAP_TR-004_DISK*-0:0"
-export TR004_ENABLED_FLAG="$T/enabled" TR004_LOCK="$T/lock" QUIET=1
+export TR004_ENABLED_FLAG="$T/enabled" TR004_LOCK="$T/lock" QUIET=1 TR004_LANG=de
 S="$ROOT/tr004-smart"
 sha() { shasum "$T/dev/"* | awk '{print $1}' | tr '\n' ' '; }
 
@@ -110,7 +110,12 @@ TR004_REAL=/bin/echo bash "$ROOT/unraid/smartctl-wrapper" -d jmb39x-q,0 -a /dev/
 out=$(TR004_REAL=/bin/echo bash "$ROOT/unraid/smartctl-wrapper" -d jmb39x-q,0,s48 -a /dev/null 2>&1); [ "$out" = "-d jmb39x-q,0,s48 -a /dev/null" ] && ok "mit Sektor durchgelassen" || bad "mit Sektor: $out"
 out=$(TR004_REAL=/bin/echo bash "$ROOT/unraid/smartctl-wrapper" -H /dev/null 2>&1); [ "$out" = "-H /dev/null" ] && ok "andere Platten unveraendert" || bad "andere: $out"
 
-echo "Test 10: Abbruch mitten im Lauf - Sektoren trotzdem wiederhergestellt"
+echo "Test 10: Englisch"
+reset_disks
+TR004_LANG=en bash "$S" list 2>&1 | grep -q "gpt, first partition at 64, sector 48 free" && ok "englische Meldungen" || bad "englisch"
+TR004_LANG=en TR004_MAILBOX_LBA=33 bash "$S" list 2>&1 | grep -q "sector 33 is not allowed" && ok "englische Sperre" || bad "englische Sperre"
+
+echo "Test 11: Abbruch mitten im Lauf - Sektoren trotzdem wiederhergestellt"
 reset_disks; before=$(sha)
 cat > "$T/bin/smartctl" <<'EOF'
 #!/bin/bash

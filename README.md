@@ -54,6 +54,8 @@ der TR-004-Platten wie bei direkt angeschlossenen Platten.
 
 Deinstallieren stellt das originale `smartctl` wieder her.
 
+Sprache: Seite und Meldungen erscheinen auf Deutsch, wenn Unraid auf Deutsch eingestellt ist, sonst auf Englisch.
+
 Voraussetzungen: Unraid ab 6.12 (getestet mit 7.x), `smartctl` ab 7.3 (mit `jmb39x-q`).
 
 ## Benutzung

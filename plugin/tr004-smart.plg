@@ -2,8 +2,8 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "tr004-smart">
 <!ENTITY author    "2pac1991">
-<!ENTITY version   "2026.11.15">
-<!ENTITY md5       "d297893d32bfae9d94970243a8e27517">
+<!ENTITY version   "2026.11.15b">
+<!ENTITY md5       "23727f2803aac2ac592a65a4753305e5">
 <!ENTITY gitURL    "https://raw.githubusercontent.com/2pac1991/tr004-smart/main">
 <!ENTITY pluginURL "&gitURL;/plugin/&name;.plg">
 <!ENTITY plugdir   "/usr/local/emhttp/plugins/&name;">
@@ -15,7 +15,7 @@
 
 <CHANGES>
 ##&name;
-###2026.11.15
+###2026.11.15b
 - Beta: safe SMART for disks in a QNAP TR-004 (JMicron JMB39x) - mailbox sector outside the partition tables,
   backup/restore of sectors 0-63 around every command, smartctl wrapper for the Unraid GUI,
   unsafe jmb39x calls (sector 33) are blocked.

@@ -4,14 +4,20 @@ Icon="hdd-o"
 Tag="hdd-o"
 ---
 <?PHP
-/* tr004-smart - Einstellungs- und Statusseite */
+/* tr004-smart - Einstellungs- und Statusseite (Deutsch/Englisch nach Unraid-Sprache) */
 $state   = '/var/lib/tr004-smart';
 $enabled = file_exists('/boot/config/plugins/tr004-smart/enabled');
 $last    = @json_decode(@file_get_contents("$state/last.json"), true) ?: [];
 $lastrun = @filemtime("$state/last.json");
-exec('/usr/local/sbin/tr004-smart list 2>&1', $check, $checkrc);
 $wrapper = file_exists('/usr/sbin/smartctl.real');
+$loc     = $_SESSION['locale'] ?? ($display['locale'] ?? '');
+if (!$loc) $loc = @parse_ini_file('/boot/config/plugins/dynamix/dynamix.cfg', true)['display']['locale'] ?? '';
+$de      = strncmp($loc, 'de', 2) === 0;
+if (!defined('TR004_DE')) define('TR004_DE', $de);
+$lang    = $de ? 'de' : 'en';
+exec('TR004_LANG='.$lang.' /usr/local/sbin/tr004-smart list 2>&1', $check, $checkrc);
 function h($s) { return htmlspecialchars((string)$s, ENT_QUOTES); }
+if (!function_exists('tr004_L')) { function tr004_L($en, $dt) { return TR004_DE ? $dt : $en; } }
 ?>
 <style>
 .tr004 table { width:auto; margin:8px 0 16px; }
@@ -21,20 +27,28 @@ function h($s) { return htmlspecialchars((string)$s, ENT_QUOTES); }
 .tr004 .beta { border-left:4px solid #e69c24; padding:6px 10px; background:rgba(230,156,36,.1); margin-bottom:12px; }
 </style>
 <div class="tr004">
-<div class="beta"><b>Beta.</b> SMART data from disks in a QNAP TR-004 is read through a "mailbox" sector on one of
-the enclosure's disks (the only method the JMicron controller offers). This plugin uses a free sector in the gap
-before the first partition (never sector 33, which belongs to the GPT), backs up sectors 0&ndash;63 of every
-enclosure disk before each run and restores any change right after each command. Use at your own risk.</div>
+<div class="beta"><?=tr004_L(
+'<b>Beta.</b> SMART data from disks in a QNAP TR-004 is read through a "mailbox" sector on one of the enclosure\'s
+disks (the only method the JMicron controller offers). This plugin uses a free sector in the gap before the first
+partition (never sector 33, which belongs to the GPT), backs up sectors 0&ndash;63 of every enclosure disk before each
+run and restores any change right after each command. Use at your own risk.',
+'<b>Beta.</b> SMART-Werte von Platten im QNAP TR-004 werden über einen „Briefkasten“-Sektor auf einer Platte im
+Gehäuse gelesen (die einzige Methode, die der JMicron-Chip anbietet). Das Plugin nutzt einen freien Sektor in der Lücke
+vor der ersten Partition (nie Sektor 33, der gehört zur GPT), sichert vor jedem Lauf die Sektoren 0&ndash;63 aller
+Platten im Gehäuse und stellt jede Veränderung direkt nach jedem Befehl wieder her. Nutzung auf eigenes Risiko.')?></div>
 
 <table>
-<tr><th>Status</th><td><?=$enabled ? '<span class="ok">enabled</span>' : '<span class="bad">not enabled</span>'?></td></tr>
-<tr><th>smartctl wrapper</th><td><?=$wrapper ? '<span class="ok">active</span> (Unraid gets TR-004 values from the last safe read; unsafe jmb39x calls are blocked)' : '<span class="bad">not active</span>'?></td></tr>
-<tr><th>Last read</th><td><?=$lastrun ? date('Y-m-d H:i:s', $lastrun) : '&ndash;'?></td></tr>
+<tr><th><?=tr004_L('Status','Status')?></th><td><?=$enabled ? '<span class="ok">'.tr004_L('enabled','aktiv').'</span>' : '<span class="bad">'.tr004_L('not enabled','nicht freigeschaltet').'</span>'?></td></tr>
+<tr><th><?=tr004_L('smartctl wrapper','smartctl-Vermittler')?></th><td><?=$wrapper
+  ? '<span class="ok">'.tr004_L('active','aktiv').'</span> '.tr004_L('(Unraid gets TR-004 values from the last safe read; unsafe jmb39x calls are blocked)','(Unraid bekommt die TR-004-Werte aus der letzten sicheren Abfrage; unsichere jmb39x-Aufrufe werden blockiert)')
+  : '<span class="bad">'.tr004_L('not active','nicht aktiv').'</span>'?></td></tr>
+<tr><th><?=tr004_L('Last read','Letzte Abfrage')?></th><td><?=$lastrun ? date($de ? 'd.m.Y H:i:s' : 'Y-m-d H:i:s', $lastrun) : '&ndash;'?></td></tr>
 </table>
 
 <?if ($last):?>
 <table>
-<tr><th>Bay</th><th>Model</th><th>Serial</th><th>Health</th><th>Temp</th><th>Power-on h</th><th>Reallocated</th><th>Pending</th><th>Offline unc.</th></tr>
+<tr><th><?=tr004_L('Bay','Einschub')?></th><th><?=tr004_L('Model','Modell')?></th><th><?=tr004_L('Serial','Seriennummer')?></th><th><?=tr004_L('Health','Zustand')?></th>
+<th><?=tr004_L('Temp','Temp.')?></th><th><?=tr004_L('Power-on h','Betriebsstd.')?></th><th><?=tr004_L('Reallocated','Ersetzt')?></th><th><?=tr004_L('Pending','Ausstehend')?></th><th><?=tr004_L('Offline unc.','Unkorrigierbar')?></th></tr>
 <?foreach ($last as $d):?>
 <tr><td><?=h($d['port']+1)?></td><td><?=h($d['model'])?></td><td><?=h($d['serial'])?></td>
 <td><?=$d['passed']===true ? '<span class="ok">PASSED</span>' : ($d['passed']===false ? '<span class="bad">FAILED</span>' : '?')?></td>
@@ -43,23 +57,24 @@ enclosure disk before each run and restores any change right after each command.
 </table>
 <?endif;?>
 
-<b>Safety check</b> (read only):
+<b><?=tr004_L('Safety check','Sicherheitsprüfung')?></b> (<?=tr004_L('read only','nur lesen')?>):
 <pre id="tr004out"><?=h(implode("\n", $check))?></pre>
 
-<input type="button" value="Run check" onclick="tr004('check')">
+<input type="button" value="<?=tr004_L('Run check','Prüfen')?>" onclick="tr004('check')">
 <?if (!$enabled):?>
-<input type="button" value="Enable" <?=$checkrc ? 'disabled' : ''?> onclick="if(confirm('Enable reading SMART data through the mailbox sector?')) tr004('enable')">
+<input type="button" value="<?=tr004_L('Enable','Freischalten')?>" <?=$checkrc ? 'disabled' : ''?> onclick="if(confirm('<?=tr004_L('Enable reading SMART data through the mailbox sector?','SMART-Werte über den Briefkasten-Sektor lesen?')?>')) tr004('enable')">
 <?else:?>
-<input type="button" value="Read now" onclick="tr004('read')">
-<input type="button" value="Disable" onclick="tr004('disable')">
+<input type="button" value="<?=tr004_L('Read now','Jetzt lesen')?>" onclick="tr004('read')">
+<input type="button" value="<?=tr004_L('Disable','Abschalten')?>" onclick="tr004('disable')">
 <?endif;?>
-<p>Values are refreshed every minute (health and attributes) and every hour (full report).
-Results: <code>/var/lib/tr004-smart/last.json</code>. Command line: <code>tr004-smart</code>.</p>
+<p><?=tr004_L('Values are refreshed every minute (health and attributes) and every hour (full report).',
+        'Die Werte werden jede Minute (Zustand und Attribute) und stündlich (vollständiger Bericht) aufgefrischt.')?>
+<?=tr004_L('Results','Ergebnisse')?>: <code>/var/lib/tr004-smart/last.json</code>. <?=tr004_L('Command line','Befehlszeile')?>: <code>tr004-smart</code>.</p>
 </div>
 <script>
 function tr004(action) {
   $('#tr004out').text('...');
-  $.post('/plugins/tr004-smart/include/action.php', {action: action, csrf_token: '<?=$var['csrf_token']?>'}, function(r) {
+  $.post('/plugins/tr004-smart/include/action.php', {action: action, lang: '<?=$lang?>', csrf_token: '<?=$var['csrf_token']?>'}, function(r) {
     $('#tr004out').text(r);
     if (action != 'check') setTimeout(function(){ location.reload(); }, 800);
   });
